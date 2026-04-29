@@ -430,16 +430,21 @@ interface PrivacyOverride {
 
 /**
  * Create a per-invocation GEMINI_CLI_SYSTEM_SETTINGS_PATH override that
- * disables usageStatisticsEnabled and telemetry. The temp file is written
- * with mode 0o600 to prevent other local users from reading it. Caller MUST
- * invoke cleanup() in a finally block to remove the temp directory.
+ * disables usageStatisticsEnabled at the documented Gemini CLI key
+ * (`privacy.usageStatisticsEnabled`). Earlier rounds wrote the flag at
+ * the top level plus a `telemetry` block, but the current Gemini CLI
+ * settings schema reads `privacy.usageStatisticsEnabled` (and ignores
+ * top-level keys with similar names), so a top-level shape silently
+ * leaves usage stats enabled even though the file is loaded. The temp
+ * file is written with mode 0o600 to prevent other local users from
+ * reading it. Caller MUST invoke cleanup() in a finally block to remove
+ * the temp directory.
  */
 function createPrivacyOverride(): PrivacyOverride {
   const dir = mkdtempSync(join(tmpdir(), "opencode-gemini-search-"));
   const envPath = join(dir, "settings.json");
   const settings = {
-    usageStatisticsEnabled: false,
-    telemetry: { enabled: false },
+    privacy: { usageStatisticsEnabled: false },
   };
   writeFileSync(envPath, JSON.stringify(settings), { mode: 0o600 });
   return {
