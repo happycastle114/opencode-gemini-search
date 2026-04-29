@@ -1,0 +1,69 @@
+{
+  "name": "@happycastle/opencode-gemini-search",
+  "version": "0.0.0-development",
+  "description": "OpenCode plugin: privacy-hardened Gemini web search with mandatory citations and auto-trigger",
+  "license": "MIT",
+  "author": "happycastle <happycastle114@gmail.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/happycastle114/opencode-gemini-search.git"
+  },
+  "homepage": "https://github.com/happycastle114/opencode-gemini-search#readme",
+  "bugs": {
+    "url": "https://github.com/happycastle114/opencode-gemini-search/issues"
+  },
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "plugin",
+    "gemini",
+    "google-gemini",
+    "search",
+    "web-search",
+    "citations",
+    "privacy",
+    "ai"
+  ],
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/plugin.test.mjs",
+    "prepublishOnly": "npm run build && npm run lint && npm test"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "1.14.29",
+    "@semantic-release/changelog": "6.0.3",
+    "@semantic-release/git": "10.0.1",
+    "@semantic-release/github": "12.0.6",
+    "@semantic-release/npm": "13.1.5",
+    "@semantic-release/release-notes-generator": "14.1.0",
+    "@types/node": "20.14.10",
+    "conventional-changelog-conventionalcommits": "8.0.0",
+    "semantic-release": "25.0.3",
+    "typescript": "5.5.3"
+  }
+}
