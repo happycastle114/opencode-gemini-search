@@ -1,3 +1,9 @@
+## [1.1.4](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.3...v1.1.4) (2026-04-29)
+
+### Bug Fixes
+
+* **privacy:** force-disable Gemini CLI telemetry in both settings and env ([a357238](https://github.com/happycastle114/opencode-gemini-search/commit/a35723895eba91e5b2ca23484a543dcebd4d6766))
+
 ## [1.1.3](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.2...v1.1.3) (2026-04-29)
 
 ### Bug Fixes
