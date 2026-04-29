@@ -80,18 +80,18 @@ test("validateCitations rejects citations only inside inline code spans", () => 
 });
 
 test("validateCitations rejects Markdown image syntax (![Source])", () => {
-  const text = "![Source](https://example.com)\n\n## Sources\n1. ex\n";
+  const text = "![Source](https://news.example.test/x)\n\n## Sources\n1. https://news.example.test/x\n";
   const r = validateCitations(text);
   assert.equal(r.valid, false);
 });
 
 test("validateCitations accepts http:// scheme", () => {
-  const text = "Fact [Source](http://example.com).\n\n## Sources\n1. ex\n";
+  const text = "Fact [Source](http://news.example.test/x).\n\n## Sources\n1. http://news.example.test/x\n";
   assert.equal(validateCitations(text).valid, true);
 });
 
 test("validateCitations rejects non-http(s) schemes (javascript:)", () => {
-  const text = "[Source](javascript:alert(1))\n\n## Sources\n1. ex\n";
+  const text = "[Source](javascript:alert(1))\n\n## Sources\n1. https://news.example.test/x\n";
   assert.equal(validateCitations(text).valid, false);
 });
 
@@ -289,7 +289,89 @@ test("buildPrompt: neutralizes injected fake system markers in query", () => {
   const lines = p.split("\n");
   const sysEndIdx = lines.findIndex((l) => l.startsWith("User question:"));
   assert.ok(sysEndIdx > 0, "user question line must exist after system prompt");
-  // The injected newlines must be JSON-escaped so they cannot start a new system rule.
   const tail = lines.slice(sysEndIdx).join("\n");
   assert.ok(tail.includes("\\n"), "newlines in the user query must be JSON-escaped");
+});
+
+// Oracle R2-005: JSON.stringify leaves U+2028/U+2029/bidi-override controls
+// verbatim; buildPrompt must additionally \uXXXX-escape them so they cannot
+// visually break out of the quoted user-question boundary.
+test("buildPrompt: escapes Unicode line separators U+2028/U+2029 (R2-005)", () => {
+  const p = buildPrompt("a\u2028b\u2029c");
+  assert.ok(!p.includes("\u2028"), "U+2028 must be escaped");
+  assert.ok(!p.includes("\u2029"), "U+2029 must be escaped");
+  assert.match(p, /\\u2028/);
+  assert.match(p, /\\u2029/);
+});
+
+test("buildPrompt: escapes bidi override controls U+202A-202E and U+2066-2069 (R2-005)", () => {
+  const bidi = "\u202E\u202D\u2066\u2069";
+  const p = buildPrompt(`x${bidi}y`);
+  for (const ch of bidi) {
+    assert.ok(!p.includes(ch), `${ch.codePointAt(0)?.toString(16)} must be escaped`);
+  }
+  assert.match(p, /\\u202e/);
+  assert.match(p, /\\u2069/);
+});
+
+// Oracle R2-002: prompt rule 6 mandates literal NO_RESULTS on zero hits.
+// validateCitations must NOT reject this token (handled at the call site
+// in runGemini before validateCitations runs); test the contract holds.
+test("validateCitations: rejects NO_RESULTS token (caller must short-circuit before this)", () => {
+  // validateCitations alone has no special-case for NO_RESULTS — the
+  // runGemini caller short-circuits. Documenting the contract: bare
+  // NO_RESULTS lacks `## Sources`, so it MUST fail the validator.
+  const v = validateCitations("NO_RESULTS");
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /Sources/);
+});
+
+// Oracle R2-003: validator must reject responses that cite forbidden
+// placeholder hosts even if the structural contract is satisfied.
+test("validateCitations: rejects example.com placeholder host (R2-003)", () => {
+  const bad = `Foo is real. [Source](https://example.com/foo)\n\n## Sources\n1. https://example.com/foo\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /forbidden|placeholder/i);
+});
+
+test("validateCitations: rejects foo.com placeholder host (R2-003)", () => {
+  const bad = `Bar happened. [Source](https://foo.com/x)\n\n## Sources\n1. https://foo.com/x\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+});
+
+test("validateCitations: rejects URL containing PLACEHOLDER token (R2-003)", () => {
+  const bad = `Y is Z. [Source](https://news.example/PLACEHOLDER/article)\n\n## Sources\n1. https://news.example/PLACEHOLDER/article\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /placeholder|PLACEHOLDER/i);
+});
+
+test("validateCitations: rejects URL containing TODO token (R2-003)", () => {
+  const bad = `Y is Z. [Source](https://news.example/TODO/article)\n\n## Sources\n1. https://news.example/TODO/article\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+});
+
+// Oracle R2-003: inline citation URLs must appear under ## Sources too.
+test("validateCitations: rejects inline citation absent from ## Sources (R2-003)", () => {
+  const bad = `Foo. [Source](https://real.news/article-a)\n\n## Sources\n1. https://real.news/article-b\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /not listed|Sources/i);
+});
+
+// Positive case: legit response with one inline + matching Sources entry passes.
+test("validateCitations: accepts well-formed response with matching inline + Sources URLs", () => {
+  const good = `Node 22 is the active LTS. [Source](https://nodejs.org/en/about/previous-releases)\n\n## Sources\n1. https://nodejs.org/en/about/previous-releases\n`;
+  const v = validateCitations(good);
+  assert.equal(v.valid, true);
+});
+
+// Positive case: extra entries in Sources beyond inline citations are tolerated.
+test("validateCitations: tolerates Sources entries with no matching inline citation", () => {
+  const good = `Foo. [Source](https://a.example.test/x)\n\n## Sources\n1. https://a.example.test/x\n2. https://b.example.test/y\n`;
+  const v = validateCitations(good);
+  assert.equal(v.valid, true);
 });

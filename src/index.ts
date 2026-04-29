@@ -217,9 +217,59 @@ function stripCode(text: string): string {
 }
 
 /**
- * Validate that the gemini response satisfies the citation contract: a
- * `## Sources` section AND at least one `[Source](http(s)://URL)` inline
- * citation outside any code or HTML block.
+ * Hosts that the prompt explicitly forbids the model from citing because they
+ * are common placeholder/fabricated URLs. Matched case-insensitively against
+ * the URL host (post-`URL.parse`). Substring tokens (e.g. `your-source`) are
+ * matched against the full URL string. Keep in sync with rule 2 of
+ * SYSTEM_PROMPT.
+ */
+const FORBIDDEN_HOSTS = new Set([
+  "example.com",
+  "example.org",
+  "example.net",
+  "foo.com",
+  "bar.com",
+  "your-source.com",
+]);
+const FORBIDDEN_URL_TOKENS = ["...", "TODO", "PLACEHOLDER", "your-source"];
+
+/**
+ * Extract the URL set referenced under the `## Sources` heading. Sources are
+ * matched as the first http(s) URL on each non-empty line under the heading,
+ * stopping at the next ATX heading or end-of-input. Returns URLs in the order
+ * they appear.
+ */
+function extractSourcesSectionUrls(stripped: string): string[] {
+  const lines = stripped.split("\n");
+  const startIdx = lines.findIndex((l) => /^## Sources\s*$/.test(l));
+  if (startIdx < 0) return [];
+  const urls: string[] = [];
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (/^#{1,6}\s/.test(line)) break;
+    const m = line.match(/(https?:\/\/[^\s<>)\]]+)/);
+    if (m && m[1]) urls.push(m[1]);
+  }
+  return urls;
+}
+
+/** Lowercase a URL for stable comparison; trailing punctuation trimmed. */
+function normalizeUrl(u: string): string {
+  return u.replace(/[.,;:!?)\]]+$/, "").toLowerCase();
+}
+
+/**
+ * Validate that the gemini response satisfies the citation contract:
+ * 1. A literal `## Sources` heading
+ * 2. ≥1 `[Source](http(s)://URL)` inline citation outside code/HTML
+ * 3. No URL matches a forbidden placeholder host or token
+ * 4. Inline-citation URL set ⊆ Sources-section URL set (one-to-one mapping;
+ *    the Sources section may contain extras as a degraded-but-acceptable case
+ *    so long as every inline citation is grounded in the Sources list).
+ *
+ * Note: provenance against actual google_web_search grounding metadata
+ * cannot be verified post-hoc from stdout alone — this validator catches
+ * the structural and placeholder-fabrication cases that *are* detectable.
  */
 export function validateCitations(response: string): {
   valid: boolean;
@@ -230,11 +280,50 @@ export function validateCitations(response: string): {
     return { valid: false, reason: "missing `## Sources` section" };
   }
   INLINE_CITATION_RE.lastIndex = 0;
-  if (!INLINE_CITATION_RE.exec(stripped)) {
+  const inlineUrls: string[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_CITATION_RE.exec(stripped)) !== null) {
+    if (m[1]) inlineUrls.push(m[1]);
+  }
+  if (inlineUrls.length === 0) {
     return {
       valid: false,
       reason: "missing inline `[Source](URL)` citations outside code/HTML",
     };
+  }
+  const sourcesUrls = extractSourcesSectionUrls(stripped);
+  const allUrls = [...inlineUrls, ...sourcesUrls];
+  for (const url of allUrls) {
+    let host = "";
+    try {
+      host = new URL(url).hostname.toLowerCase();
+    } catch {
+      return { valid: false, reason: `unparseable cited URL: ${url}` };
+    }
+    if (FORBIDDEN_HOSTS.has(host)) {
+      return {
+        valid: false,
+        reason: `forbidden placeholder URL host cited: ${host}`,
+      };
+    }
+    const lower = url.toLowerCase();
+    for (const tok of FORBIDDEN_URL_TOKENS) {
+      if (lower.includes(tok.toLowerCase())) {
+        return {
+          valid: false,
+          reason: `forbidden placeholder token in cited URL: ${tok}`,
+        };
+      }
+    }
+  }
+  const sourcesSet = new Set(sourcesUrls.map(normalizeUrl));
+  for (const u of inlineUrls) {
+    if (!sourcesSet.has(normalizeUrl(u))) {
+      return {
+        valid: false,
+        reason: `inline citation URL not listed under \`## Sources\`: ${u}`,
+      };
+    }
   }
   return { valid: true };
 }
@@ -318,12 +407,31 @@ interface RunOptions {
 }
 
 /**
+ * Escape Unicode line/paragraph separators (U+2028, U+2029) and bidi
+ * override controls (U+202A–U+202E, U+2066–U+2069) inside the JSON-encoded
+ * user query. JSON.stringify leaves these characters verbatim, but they
+ * can visually break out of the quoted user-question boundary or flip
+ * RTL/LTR ordering in a way that confuses the model. We escape them to
+ * their `\uXXXX` form, which JSON.parse-equivalent decoders normalize back
+ * to the original code points without losing fidelity.
+ */
+function escapeUnicodePromptConfusion(jsonEncoded: string): string {
+  return jsonEncoded.replace(
+    /[\u2028\u2029\u202A-\u202E\u2066-\u2069]/g,
+    (ch) => "\\u" + ch.charCodeAt(0).toString(16).padStart(4, "0"),
+  );
+}
+
+/**
  * Build the prompt sent to gemini. The user query is JSON.stringify'd to
  * give the model a clearly-quoted boundary, blocking prompt-injection via
- * literal newlines or fake system markers in the user input.
+ * literal newlines or fake system markers in the user input. Unicode
+ * line/paragraph separators and bidi controls are additionally escaped
+ * because JSON.stringify leaves them as literal code points.
  */
 export function buildPrompt(query: string): string {
-  return `${SYSTEM_PROMPT}\n\nUser question: ${JSON.stringify(query)}\n`;
+  const safe = escapeUnicodePromptConfusion(JSON.stringify(query));
+  return `${SYSTEM_PROMPT}\n\nUser question: ${safe}\n`;
 }
 
 export { SYSTEM_PROMPT };
@@ -435,6 +543,10 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
 
     const raw = Buffer.concat(stdoutChunks).toString("utf8");
     const cleaned = stripTerminalControls(raw).trim();
+
+    if (cleaned === "NO_RESULTS") {
+      return { ok: true, response: "NO_RESULTS" };
+    }
 
     const v = validateCitations(cleaned);
     if (!v.valid) {
