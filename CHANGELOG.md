@@ -1,3 +1,9 @@
+## [1.1.3](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.2...v1.1.3) (2026-04-29)
+
+### Bug Fixes
+
+* **privacy:** write canonical privacy.usageStatisticsEnabled key ([22e471a](https://github.com/happycastle114/opencode-gemini-search/commit/22e471a82d482c98a3b50bcaf1b6953d0ee69d18))
+
 ## [1.1.2](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.1...v1.1.2) (2026-04-29)
 
 ### Bug Fixes
