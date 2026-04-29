@@ -19,8 +19,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Hooks, PluginInput } from "@opencode-ai/plugin";
 import { tool } from "@opencode-ai/plugin";
@@ -472,6 +479,82 @@ function createPrivacyOverride(): PrivacyOverride {
   };
 }
 
+interface GeminiHomeOverride {
+  home: string;
+  cleanup: () => void;
+}
+
+// Auth/identity files that must be visible to the Gemini CLI for normal
+// operation when GEMINI_CLI_HOME is redirected. We expose them via symlink
+// (or copy fallback) so the redirected home looks authenticated, but
+// session transcripts and other writes still land inside the disposable
+// override directory.
+const GEMINI_PASSTHROUGH_FILES = [
+  "oauth_creds.json",
+  "google_accounts.json",
+  "installation_id",
+  "settings.json",
+  "state.json",
+  "trustedFolders.json",
+] as const;
+
+/**
+ * Create a per-invocation GEMINI_CLI_HOME override that isolates Gemini
+ * CLI's project temp directory (where non-interactive chat transcripts
+ * are persisted as JSONL under `<home>/.gemini/tmp/<projectHash>/chats/`).
+ *
+ * Round 6 (Oracle R6 MEDIUM): even with telemetry env vars and system-
+ * settings privacy/telemetry pinned, the Gemini CLI's ChatRecordingService
+ * unconditionally writes the verbatim user prompt to a session JSONL on
+ * disk (see packages/core/src/services/chatRecordingService.ts). That
+ * write is independent of `telemetry.enabled`, `telemetry.logPrompts`,
+ * and `privacy.usageStatisticsEnabled`. The only documented escape hatch
+ * is `GEMINI_CLI_HOME` (packages/core/src/utils/paths.ts:homedir()), which
+ * redirects every `<home>/.gemini/*` lookup to the given directory.
+ *
+ * We materialize a fresh temp directory per invocation, symlink the
+ * user's existing auth/identity files into `<override>/.gemini/` so the
+ * CLI stays authenticated, and let chat transcripts land inside the
+ * disposable area. The caller MUST invoke cleanup() in a finally block
+ * so the temp directory (including the chat transcript) is removed even
+ * on error/timeout/abort. Symlinks are followed by readers but the
+ * targets remain owned by the user's real `~/.gemini`, so cleanup only
+ * deletes the symlinks plus the disposable transcript.
+ */
+function createGeminiHomeOverride(): GeminiHomeOverride {
+  const home = mkdtempSync(join(tmpdir(), "opencode-gemini-home-"));
+  const dotGemini = join(home, ".gemini");
+  mkdirSync(dotGemini, { recursive: true, mode: 0o700 });
+  const realDotGemini = join(homedir(), ".gemini");
+  for (const name of GEMINI_PASSTHROUGH_FILES) {
+    const target = join(realDotGemini, name);
+    const linkPath = join(dotGemini, name);
+    try {
+      symlinkSync(target, linkPath);
+    } catch {
+      // Symlink can fail (e.g. on filesystems without symlink support, or
+      // when the source file does not exist). Fall back to a best-effort
+      // copy; if even that fails (file genuinely absent), skip — Gemini
+      // CLI tolerates missing optional files like state.json.
+      try {
+        copyFileSync(target, linkPath);
+      } catch {
+        /* swallow: file may not exist (e.g. fresh install) */
+      }
+    }
+  }
+  return {
+    home,
+    cleanup: () => {
+      try {
+        rmSync(home, { recursive: true, force: true });
+      } catch {
+        /* swallow: cleanup is best-effort */
+      }
+    },
+  };
+}
+
 async function terminateChild(
   child: ChildProcess,
   graceMs = TERMINATE_GRACE_MS,
@@ -580,6 +663,7 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
   }
 
   const privacy = createPrivacyOverride();
+  const geminiHome = createGeminiHomeOverride();
   let child: ChildProcess | null = null;
   let timedOut = false;
   let aborted = false;
@@ -598,6 +682,7 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
     child = spawn(geminiBinary, ["--prompt", prompt, "-o", "json"], {
       env: {
         ...process.env,
+        GEMINI_CLI_HOME: geminiHome.home,
         GEMINI_CLI_SYSTEM_SETTINGS_PATH: privacy.envPath,
         // Round 5 (Oracle R5 MEDIUM): force telemetry off in the spawned
         // env. Gemini CLI's settings merge is `argv ?? env ?? settings`,
@@ -728,6 +813,7 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
   } finally {
     signal.removeEventListener("abort", onAbort);
     privacy.cleanup();
+    geminiHome.cleanup();
   }
 }
 

@@ -452,8 +452,45 @@ test("googleWebSearchSuccessCount: returns 0 on missing/malformed stats", () => 
 
 test("R5 MEDIUM: dist disables telemetry in both system settings and spawn env", () => {
   const body = readFileSync("./dist/index.js", "utf8");
-  assert.match(body, /privacy:\s*\{\s*usageStatisticsEnabled:\s*false\s*\}/);
-  assert.match(body, /telemetry:\s*\{\s*enabled:\s*false,\s*logPrompts:\s*false\s*\}/);
-  assert.match(body, /GEMINI_TELEMETRY_ENABLED:\s*["']false["']/);
-  assert.match(body, /GEMINI_TELEMETRY_LOG_PROMPTS:\s*["']false["']/);
+  // R6 LOW (Oracle R6 P2 D2): scope these assertions to the actual settings
+  // object literal and spawn env shape, not arbitrary file text. Earlier
+  // versions matched on substrings that also appeared inside JSDoc, so a
+  // refactor that deleted the runtime block but left the comment would
+  // still pass. Anchoring on `const settings = { ... };` and the spawn-env
+  // object boundary makes the assertions resilient to comment text drift.
+  assert.match(
+    body,
+    /const\s+settings\s*=\s*\{\s*privacy:\s*\{\s*usageStatisticsEnabled:\s*false\s*\}\s*,\s*telemetry:\s*\{\s*enabled:\s*false\s*,\s*logPrompts:\s*false\s*\}\s*,?\s*\}\s*;/,
+    "runtime settings object must include privacy + telemetry pins"
+  );
+  assert.match(
+    body,
+    /env:\s*\{[\s\S]*?GEMINI_TELEMETRY_ENABLED:\s*["']false["'][\s\S]*?GEMINI_TELEMETRY_LOG_PROMPTS:\s*["']false["'][\s\S]*?\}/,
+    "spawn env must pin both GEMINI_TELEMETRY_ENABLED and GEMINI_TELEMETRY_LOG_PROMPTS"
+  );
+});
+
+test("R6 MEDIUM: dist isolates Gemini CLI home to disposable temp dir", () => {
+  const body = readFileSync("./dist/index.js", "utf8");
+  // Oracle R6 P2 D1: Gemini CLI's ChatRecordingService persists the
+  // verbatim user prompt to a JSONL under `<home>/.gemini/tmp/<hash>/chats/`
+  // independent of telemetry/privacy settings. Mitigation is GEMINI_CLI_HOME
+  // pointed at a per-invocation temp dir that is removed in finally. Anchor
+  // assertions on the function names and env-binding so future cleanup
+  // cannot silently delete this layer of the privacy contract.
+  assert.match(
+    body,
+    /createGeminiHomeOverride/,
+    "createGeminiHomeOverride must be present in dist"
+  );
+  assert.match(
+    body,
+    /GEMINI_CLI_HOME:\s*[A-Za-z_$][\w$]*\.home/,
+    "spawn env must set GEMINI_CLI_HOME to override.home"
+  );
+  assert.match(
+    body,
+    /opencode-gemini-home-/,
+    "override must use the dedicated mkdtemp prefix"
+  );
 });
