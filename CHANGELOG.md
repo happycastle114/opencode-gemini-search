@@ -1,3 +1,9 @@
+## [1.1.1](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.0...v1.1.1) (2026-04-29)
+
+### Bug Fixes
+
+* **validator:** R2 hardening — placeholder denylist, NO_RESULTS bypass, Unicode escape ([11bf662](https://github.com/happycastle114/opencode-gemini-search/commit/11bf6625506c2b3812c8caa8018d915133b08de3))
+
 ## [1.1.0](https://github.com/happycastle114/opencode-gemini-search/compare/v1.0.0...v1.1.0) (2026-04-29)
 
 ### Features
