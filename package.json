@@ -1,6 +1,6 @@
 {
   "name": "@happycastle/opencode-gemini-search",
-  "version": "0.0.0-development",
+  "version": "1.0.0",
   "description": "OpenCode plugin: privacy-hardened Gemini web search with mandatory citations and auto-trigger",
   "license": "MIT",
   "author": "happycastle <happycastle114@gmail.com>",
