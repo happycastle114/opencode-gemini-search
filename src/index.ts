@@ -223,15 +223,29 @@ function stripCode(text: string): string {
  * matched against the full URL string. Keep in sync with rule 2 of
  * SYSTEM_PROMPT.
  */
-const FORBIDDEN_HOSTS = new Set([
+const FORBIDDEN_HOSTS = [
   "example.com",
   "example.org",
   "example.net",
   "foo.com",
   "bar.com",
   "your-source.com",
-]);
+];
 const FORBIDDEN_URL_TOKENS = ["...", "TODO", "PLACEHOLDER", "your-source"];
+
+/**
+ * Subdomain-aware forbidden-host check (oracle R3-004): a denied host
+ * blocks itself AND every subdomain. Otherwise the model can bypass
+ * `example.com` by citing `www.example.com`.
+ */
+export function isForbiddenHost(host: string): boolean {
+  const h = host.toLowerCase();
+  for (const f of FORBIDDEN_HOSTS) {
+    if (h === f) return true;
+    if (h.endsWith("." + f)) return true;
+  }
+  return false;
+}
 
 /**
  * Extract the URL set referenced under the `## Sources` heading. Sources are
@@ -253,23 +267,56 @@ function extractSourcesSectionUrls(stripped: string): string[] {
   return urls;
 }
 
-/** Lowercase a URL for stable comparison; trailing punctuation trimmed. */
-function normalizeUrl(u: string): string {
-  return u.replace(/[.,;:!?)\]]+$/, "").toLowerCase();
+/**
+ * Trim trailing sentence punctuation glued to a URL by markdown. RFC 3986
+ * §3.3 paths and §3.4 queries are case-sensitive — we MUST NOT lowercase
+ * (oracle R3-003). `Path` and `path` are distinct resources.
+ */
+function trimUrlPunctuation(u: string): string {
+  return u.replace(/[.,;:!?)\]]+$/, "");
+}
+
+/**
+ * Locate the line index immediately after the LAST recognised source-list
+ * line under `## Sources` (oracle R3-004 P2). A source-list line is a
+ * numbered entry (`1.`, `1)`), a bullet (`-`, `*`, `+`), or a bare or
+ * `[text](url)` URL line. Blank lines between entries are tolerated.
+ * Anything else terminates the section. Returns -1 if no `## Sources`
+ * heading exists.
+ */
+function sourcesSectionEndLine(stripped: string): number {
+  const lines = stripped.split("\n");
+  const startIdx = lines.findIndex((l) => /^## Sources\s*$/.test(l));
+  if (startIdx < 0) return -1;
+  const ENTRY_RE = /^\s*(?:[-*+]|\d+[.)])?\s*(?:\[[^\]]*\]\()?https?:\/\/\S+/;
+  let lastEntryIdx = startIdx;
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const line = lines[i] ?? "";
+    if (ENTRY_RE.test(line)) {
+      lastEntryIdx = i;
+      continue;
+    }
+    if (line.trim() === "") continue;
+    break;
+  }
+  return lastEntryIdx + 1;
 }
 
 /**
  * Validate that the gemini response satisfies the citation contract:
  * 1. A literal `## Sources` heading
  * 2. ≥1 `[Source](http(s)://URL)` inline citation outside code/HTML
- * 3. No URL matches a forbidden placeholder host or token
- * 4. Inline-citation URL set ⊆ Sources-section URL set (one-to-one mapping;
- *    the Sources section may contain extras as a degraded-but-acceptable case
- *    so long as every inline citation is grounded in the Sources list).
+ * 3. No URL matches a forbidden placeholder host (subdomain-aware) or token
+ * 4. Inline-citation URL set EQUALS Sources-section URL set (one-to-one;
+ *    no extras either direction — oracle R3-002)
+ * 5. URL comparison is byte-identical after trimming trailing punctuation
+ *    only — no case folding (oracle R3-003)
+ * 6. `## Sources` MUST be the FINAL content block (oracle R3-004 P2)
  *
- * Note: provenance against actual google_web_search grounding metadata
- * cannot be verified post-hoc from stdout alone — this validator catches
- * the structural and placeholder-fabrication cases that *are* detectable.
+ * Note: provenance against actual google_web_search grounding URLs cannot
+ * be verified — Gemini CLI does not expose the grounding URL set. The
+ * runGemini wrapper separately verifies that ≥1 google_web_search call
+ * succeeded via stats.tools.byName (oracle R3-001 partial).
  */
 export function validateCitations(response: string): {
   valid: boolean;
@@ -278,6 +325,20 @@ export function validateCitations(response: string): {
   const stripped = stripCode(response);
   if (!SOURCES_SECTION_RE.test(stripped)) {
     return { valid: false, reason: "missing `## Sources` section" };
+  }
+  // R3-004 P2: nothing but blank lines may follow the last source entry.
+  const endIdx = sourcesSectionEndLine(stripped);
+  if (endIdx >= 0) {
+    const lines = stripped.split("\n");
+    for (let i = endIdx; i < lines.length; i++) {
+      if ((lines[i] ?? "").trim() !== "") {
+        return {
+          valid: false,
+          reason:
+            "content found after `## Sources` section (audit-trail integrity: Sources MUST be final block)",
+        };
+      }
+    }
   }
   INLINE_CITATION_RE.lastIndex = 0;
   const inlineUrls: string[] = [];
@@ -300,7 +361,7 @@ export function validateCitations(response: string): {
     } catch {
       return { valid: false, reason: `unparseable cited URL: ${url}` };
     }
-    if (FORBIDDEN_HOSTS.has(host)) {
+    if (isForbiddenHost(host)) {
       return {
         valid: false,
         reason: `forbidden placeholder URL host cited: ${host}`,
@@ -316,16 +377,50 @@ export function validateCitations(response: string): {
       }
     }
   }
-  const sourcesSet = new Set(sourcesUrls.map(normalizeUrl));
-  for (const u of inlineUrls) {
-    if (!sourcesSet.has(normalizeUrl(u))) {
+  // R3-002 + R3-003: byte-identical set EQUALITY (both directions).
+  const inlineSet = new Set(inlineUrls.map(trimUrlPunctuation));
+  const sourcesSet = new Set(sourcesUrls.map(trimUrlPunctuation));
+  for (const u of inlineSet) {
+    if (!sourcesSet.has(u)) {
       return {
         valid: false,
         reason: `inline citation URL not listed under \`## Sources\`: ${u}`,
       };
     }
   }
+  for (const u of sourcesSet) {
+    if (!inlineSet.has(u)) {
+      return {
+        valid: false,
+        reason: `\`## Sources\` lists URL not cited inline (audit-trail integrity): ${u}`,
+      };
+    }
+  }
   return { valid: true };
+}
+
+/**
+ * Read `stats.tools.byName.google_web_search.success` from the gemini CLI
+ * `-o json` stats payload. Returns 0 when the field is absent or malformed
+ * (older CLI, model truly skipped the tool). Used by runGemini to enforce
+ * R3-001 partial: cited responses MUST be backed by ≥1 successful
+ * google_web_search call in this run. Gemini CLI does not expose the
+ * grounding URL set, so we cannot cross-check provenance — but we CAN
+ * prove the search tool was actually invoked.
+ */
+export function googleWebSearchSuccessCount(data: unknown): number {
+  if (!data || typeof data !== "object") return 0;
+  const stats = (data as { stats?: unknown }).stats;
+  if (!stats || typeof stats !== "object") return 0;
+  const tools = (stats as { tools?: unknown }).tools;
+  if (!tools || typeof tools !== "object") return 0;
+  const byName = (tools as { byName?: unknown }).byName;
+  if (!byName || typeof byName !== "object") return 0;
+  const entry = (byName as Record<string, unknown>)["google_web_search"];
+  if (!entry || typeof entry !== "object") return 0;
+  const success = (entry as { success?: unknown }).success;
+  const n = Number(success);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 interface PrivacyOverride {
@@ -482,7 +577,7 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
   signal.addEventListener("abort", onAbort, { once: true });
 
   try {
-    child = spawn(geminiBinary, ["--prompt", prompt], {
+    child = spawn(geminiBinary, ["--prompt", prompt, "-o", "json"], {
       env: {
         ...process.env,
         GEMINI_CLI_SYSTEM_SETTINGS_PATH: privacy.envPath,
@@ -542,10 +637,55 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
     }
 
     const raw = Buffer.concat(stdoutChunks).toString("utf8");
-    const cleaned = stripTerminalControls(raw).trim();
+    const cleanedRaw = stripTerminalControls(raw).trim();
+
+    let parsed: { response?: unknown; error?: unknown; stats?: unknown };
+    try {
+      parsed = JSON.parse(cleanedRaw);
+    } catch (err) {
+      return {
+        ok: false,
+        error: `gemini -o json returned invalid JSON: ${(err as Error).message}`,
+      };
+    }
+    if (parsed.error) {
+      const msg =
+        typeof parsed.error === "string"
+          ? parsed.error
+          : JSON.stringify(parsed.error);
+      return { ok: false, error: `gemini error: ${msg}` };
+    }
+    const responseRaw =
+      typeof parsed.response === "string" ? parsed.response : "";
+    const cleaned = stripTerminalControls(responseRaw).trim();
+    if (!cleaned) {
+      return { ok: false, error: "gemini returned empty response" };
+    }
+
+    const searchCount = googleWebSearchSuccessCount(parsed);
 
     if (cleaned === "NO_RESULTS") {
+      // R3-005: NO_RESULTS without a successful google_web_search invocation
+      // means the model skipped the tool entirely. Reject as false negative.
+      if (searchCount === 0) {
+        return {
+          ok: false,
+          error:
+            "gemini emitted NO_RESULTS without invoking google_web_search; refusing — search was never attempted",
+        };
+      }
       return { ok: true, response: "NO_RESULTS" };
+    }
+
+    // R3-001 partial: cited responses MUST be backed by ≥1 successful
+    // google_web_search call. Catches fabricated citations from training
+    // data when the model skipped the tool.
+    if (searchCount === 0) {
+      return {
+        ok: false,
+        error:
+          "gemini response includes citations but no successful google_web_search call recorded in stats; refusing — citations cannot be backed by web search evidence",
+      };
     }
 
     const v = validateCitations(cleaned);

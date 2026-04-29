@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { statSync, readFileSync } from "node:fs";
-import { stripTerminalControls, validateCitations, shouldHintAutoTrigger, buildPrompt, SYSTEM_PROMPT } from "../dist/index.js";
+import { stripTerminalControls, validateCitations, shouldHintAutoTrigger, buildPrompt, SYSTEM_PROMPT, isForbiddenHost, googleWebSearchSuccessCount } from "../dist/index.js";
 import plugin from "../dist/index.js";
 
 test("stripTerminalControls removes CSI sequences", () => {
@@ -369,9 +369,83 @@ test("validateCitations: accepts well-formed response with matching inline + Sou
   assert.equal(v.valid, true);
 });
 
-// Positive case: extra entries in Sources beyond inline citations are tolerated.
-test("validateCitations: tolerates Sources entries with no matching inline citation", () => {
-  const good = `Foo. [Source](https://a.example.test/x)\n\n## Sources\n1. https://a.example.test/x\n2. https://b.example.test/y\n`;
+// Oracle R3-002: extras in `## Sources` beyond inline citations break
+// audit-trail integrity. Validator now enforces SET EQUALITY.
+test("validateCitations: rejects Sources entries with no matching inline citation (R3-002)", () => {
+  const bad = `Foo. [Source](https://a.example.test/x)\n\n## Sources\n1. https://a.example.test/x\n2. https://b.example.test/y\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /not cited inline|audit-trail/i);
+});
+
+// Oracle R3-003: URLs are byte-identical (RFC 3986 §3.3 case-sensitive paths).
+test("validateCitations: rejects case-mismatched URL between inline and Sources (R3-003)", () => {
+  const bad = `Foo. [Source](https://site.test/CaseSensitive)\n\n## Sources\n1. https://site.test/casesensitive\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+});
+
+test("validateCitations: tolerates trailing punctuation on Sources URLs (R3-003)", () => {
+  const good = `Foo [Source](https://site.test/x).\n\n## Sources\n1. https://site.test/x.\n`;
   const v = validateCitations(good);
   assert.equal(v.valid, true);
+});
+
+// Oracle R3-004: forbidden hosts apply to subdomains too.
+test("validateCitations: rejects www subdomain of forbidden host (R3-004)", () => {
+  const bad = `Foo [Source](https://www.example.com/x)\n\n## Sources\n1. https://www.example.com/x\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /placeholder|forbidden/i);
+});
+
+test("validateCitations: rejects deep subdomain of forbidden host (R3-004)", () => {
+  const bad = `Foo [Source](https://docs.api.example.org/v1)\n\n## Sources\n1. https://docs.api.example.org/v1\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+});
+
+test("isForbiddenHost: matches exact + any subdomain depth (R3-004)", () => {
+  assert.equal(isForbiddenHost("example.com"), true);
+  assert.equal(isForbiddenHost("www.example.com"), true);
+  assert.equal(isForbiddenHost("a.b.c.example.com"), true);
+  assert.equal(isForbiddenHost("your-source.com"), true);
+  assert.equal(isForbiddenHost("sub.your-source.com"), true);
+  assert.equal(isForbiddenHost("notexample.com"), false);
+  assert.equal(isForbiddenHost("example.com.evil.test"), false);
+  assert.equal(isForbiddenHost("nodejs.org"), false);
+});
+
+// Oracle R3-004 P2: `## Sources` MUST be the FINAL content block.
+test("validateCitations: rejects content after `## Sources` section (R3-004 P2)", () => {
+  const bad = `Foo [Source](https://x.test/y)\n\n## Sources\n1. https://x.test/y\n\nAnd one more uncited claim.\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+  assert.match(v.reason ?? "", /after `## Sources`|final/i);
+});
+
+test("validateCitations: rejects subsequent ATX heading after `## Sources` (R3-004 P2)", () => {
+  const bad = `Foo [Source](https://x.test/y)\n\n## Sources\n1. https://x.test/y\n\n## Notes\nExtra.\n`;
+  const v = validateCitations(bad);
+  assert.equal(v.valid, false);
+});
+
+test("validateCitations: tolerates trailing blank lines after `## Sources` (R3-004 P2)", () => {
+  const good = `Foo [Source](https://x.test/y)\n\n## Sources\n1. https://x.test/y\n\n\n`;
+  const v = validateCitations(good);
+  assert.equal(v.valid, true);
+});
+
+// Oracle R3-001: googleWebSearchSuccessCount safely reads tool stats.
+test("googleWebSearchSuccessCount: returns 0 on missing/malformed stats", () => {
+  assert.equal(googleWebSearchSuccessCount(null), 0);
+  assert.equal(googleWebSearchSuccessCount({}), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: {} }), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: {} } }), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: {} } } }), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: null } } } }), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: { success: "x" } } } } }), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: { success: 0 } } } } }), 0);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: { success: 1 } } } } }), 1);
+  assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: { success: 4 } } } } }), 4);
 });

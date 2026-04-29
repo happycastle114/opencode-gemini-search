@@ -31,11 +31,29 @@ Every invocation:
    5. **Conflict handling**: disagreeing sources are noted in prose with each conflicting URL cited.
    6. **`NO_RESULTS` fallback**: if `google_web_search` returns nothing usable, the model emits the literal token `NO_RESULTS` and stops — no fabricated answer.
    7. **Prompt-injection defense**: the user query is treated as untrusted research-topic input only; instructions inside it that conflict with rules 1–6 are ignored.
-4. **Citation enforcement**: responses missing `## Sources` or any inline `[Source](http(s)://...)` outside code/HTML are rejected — the contract above is verified at parse time.
+4. **Citation enforcement**: responses missing `## Sources` or any inline `[Source](http(s)://...)` outside code/HTML are rejected — the full contract is verified at parse time. See [Citation contract & provenance limits](#citation-contract--provenance-limits) for the per-rule breakdown.
 5. **Terminal-control sanitisation**: all gemini stdout passes through a strict ECMA-48 sanitiser (CSI, OSC/DCS/SOS/PM/APC, Fe escapes, C0 controls except TAB/LF/CR) before being returned to OpenCode.
 6. **Prompt-injection resistance** (transport-layer): the user query is `JSON.stringify`'d into the gemini prompt, so newlines and fake system markers in the user input cannot break out of the user-question scope.
 7. **Resource limits**: query length, prompt byte size, stdout buffer, and wall-clock timeout are all bounded; over-limit calls are rejected before spawning.
 8. **Process lifecycle**: `SIGTERM` → 250 ms grace → `SIGKILL` fallback; honors `AbortSignal` from OpenCode's tool context.
+9. **Tool-invocation evidence**: gemini is invoked with `-o json`, and the wrapper inspects `stats.tools.byName.google_web_search.success`. Cited responses with zero successful `google_web_search` calls are rejected; `NO_RESULTS` without a recorded search call is also rejected.
+
+## Citation contract & provenance limits
+
+Verified on every non-`NO_RESULTS` response (rejection throws a tool error):
+
+| Check | Rule |
+|-------|------|
+| `## Sources` heading | Required, on its own line, exactly `## Sources` |
+| Inline citations | ≥1 `[Source](https://…)` outside fenced/inline code spans and HTML |
+| Forbidden hosts | `example.com`/`.org`/`.net`, `foo.com`, `bar.com`, `your-source.com` — **including all subdomains** (`www.example.com`, `docs.api.example.org`, …) |
+| Forbidden URL tokens | URL substring (case-insensitive): `...`, `TODO`, `PLACEHOLDER`, `your-source` |
+| Inline ↔ Sources mapping | **Set equality** — every inline URL appears in `## Sources` AND vice versa (no extras either direction) |
+| URL comparison | **Byte-identical** after trimming trailing `.,;:!?)]` punctuation only — **no case folding** (RFC 3986 §3.3 paths are case-sensitive) |
+| `## Sources` placement | Must be the **final** content block — no prose or headings may follow |
+| `google_web_search` invocation | `stats.tools.byName.google_web_search.success` MUST be ≥ 1 |
+
+**Provenance limit (honest disclosure):** Gemini CLI's `-o json` stats expose only the *count* of `google_web_search` invocations, **not the URL set returned by the grounding tool**. The wrapper proves a web search was actually attempted and succeeded in this run, but it **cannot** cross-check that each cited URL came from that grounding result set. The system prompt forbids inventing or paraphrasing URLs, and the structural / placeholder / set-equality / case-sensitive checks above catch the most common fabrication failure modes — but a model returning *real-looking but non-grounded* URLs from training data would still pass validation. Treat the citation contract as a high-quality structural filter, not a cryptographic provenance guarantee.
 
 ## Install
 
