@@ -1,3 +1,9 @@
+## [1.1.5](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.4...v1.1.5) (2026-04-29)
+
+### Bug Fixes
+
+* **privacy:** isolate Gemini CLI home so chat transcripts never touch ~/.gemini ([2bae69a](https://github.com/happycastle114/opencode-gemini-search/commit/2bae69a6857c5340d58f2ddd9033fa067ffb1a7a))
+
 ## [1.1.4](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.3...v1.1.4) (2026-04-29)
 
 ### Bug Fixes
