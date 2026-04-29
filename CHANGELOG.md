@@ -1,3 +1,9 @@
+## [1.1.2](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.1...v1.1.2) (2026-04-29)
+
+### Bug Fixes
+
+* **validator:** R3 hardening — subdomain-aware denylist, byte-identical URL, set-equality, Sources-is-final, tool-invocation evidence ([4180a4e](https://github.com/happycastle114/opencode-gemini-search/commit/4180a4eda62de95f9482d3b5173d232866dec9b2))
+
 ## [1.1.1](https://github.com/happycastle114/opencode-gemini-search/compare/v1.1.0...v1.1.1) (2026-04-29)
 
 ### Bug Fixes
