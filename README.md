@@ -21,7 +21,7 @@ The plugin also injects a system-prompt hint so the model knows when to use the 
 
 Every invocation:
 
-1. **Privacy override**: writes a per-invocation `settings.json` with `privacy.usageStatisticsEnabled: false` (the key path the current Gemini CLI settings schema actually reads) to a temp file (mode `0o600`) and points `GEMINI_CLI_SYSTEM_SETTINGS_PATH` at it. **Your `~/.gemini/settings.json` is never read or modified.** The temp file is removed in a `finally` block.
+1. **Privacy override**: writes a per-invocation `settings.json` with `privacy.usageStatisticsEnabled: false` **and** `telemetry: { enabled: false, logPrompts: false }` (the canonical Gemini CLI keys) to a temp file (mode `0o600`) and points `GEMINI_CLI_SYSTEM_SETTINGS_PATH` at it; the spawned process env also pins `GEMINI_TELEMETRY_ENABLED=false` and `GEMINI_TELEMETRY_LOG_PROMPTS=false` so a user-set env var cannot re-enable prompt logging. **Your `~/.gemini/settings.json` is never modified** — Gemini CLI may still read it for non-privacy preferences (model, theme, auth), but the system-settings layer this plugin writes wins for `privacy.usageStatisticsEnabled` and `telemetry.*`. The temp file is removed in a `finally` block.
 2. **No `--model` flag**: the user's gemini default model is always honored.
 3. **Anti-hallucination prompt contract** (7 rules baked into the system prompt):
    1. **MUST** invoke `google_web_search` before answering — answering from training data is forbidden.

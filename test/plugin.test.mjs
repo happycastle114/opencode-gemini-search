@@ -449,3 +449,11 @@ test("googleWebSearchSuccessCount: returns 0 on missing/malformed stats", () => 
   assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: { success: 1 } } } } }), 1);
   assert.equal(googleWebSearchSuccessCount({ stats: { tools: { byName: { google_web_search: { success: 4 } } } } }), 4);
 });
+
+test("R5 MEDIUM: dist disables telemetry in both system settings and spawn env", () => {
+  const body = readFileSync("./dist/index.js", "utf8");
+  assert.match(body, /privacy:\s*\{\s*usageStatisticsEnabled:\s*false\s*\}/);
+  assert.match(body, /telemetry:\s*\{\s*enabled:\s*false,\s*logPrompts:\s*false\s*\}/);
+  assert.match(body, /GEMINI_TELEMETRY_ENABLED:\s*["']false["']/);
+  assert.match(body, /GEMINI_TELEMETRY_LOG_PROMPTS:\s*["']false["']/);
+});

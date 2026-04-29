@@ -439,12 +439,25 @@ interface PrivacyOverride {
  * file is written with mode 0o600 to prevent other local users from
  * reading it. Caller MUST invoke cleanup() in a finally block to remove
  * the temp directory.
+ *
+ * Round 5 (Oracle R5 MEDIUM): also pin telemetry off. `privacy.usage
+ * StatisticsEnabled` and `telemetry.enabled` are SEPARATE settings in
+ * Gemini CLI — usage stats opt-out does NOT disable the OpenTelemetry
+ * pipeline that emits `gemini_cli.user_prompt.prompt` events containing
+ * the verbatim user prompt (default `telemetry.logPrompts: true`).
+ * Writing `telemetry: { enabled: false, logPrompts: false }` into the
+ * SYSTEM settings layer wins over user/workspace settings, and the
+ * spawned env (see runGemini below) additionally pins
+ * `GEMINI_TELEMETRY_ENABLED=false` / `GEMINI_TELEMETRY_LOG_PROMPTS=false`
+ * because env vars override settings per Gemini CLI's
+ * `argv ?? env ?? settings` precedence (packages/core/src/telemetry/config.ts).
  */
 function createPrivacyOverride(): PrivacyOverride {
   const dir = mkdtempSync(join(tmpdir(), "opencode-gemini-search-"));
   const envPath = join(dir, "settings.json");
   const settings = {
     privacy: { usageStatisticsEnabled: false },
+    telemetry: { enabled: false, logPrompts: false },
   };
   writeFileSync(envPath, JSON.stringify(settings), { mode: 0o600 });
   return {
@@ -586,6 +599,17 @@ async function runGemini(opts: RunOptions): Promise<RunOutcome> {
       env: {
         ...process.env,
         GEMINI_CLI_SYSTEM_SETTINGS_PATH: privacy.envPath,
+        // Round 5 (Oracle R5 MEDIUM): force telemetry off in the spawned
+        // env. Gemini CLI's settings merge is `argv ?? env ?? settings`,
+        // so an inherited `GEMINI_TELEMETRY_ENABLED=true` from the user's
+        // shell would override the system-settings file we just wrote and
+        // re-enable prompt-logging OpenTelemetry events. We pin both
+        // env vars after spreading process.env so the child cannot inherit
+        // a re-enable. Per Gemini CLI docs, anything not "true"/"1" is
+        // treated as disabled, but we use literal "false" so intent is
+        // unmistakable in process listings.
+        GEMINI_TELEMETRY_ENABLED: "false",
+        GEMINI_TELEMETRY_LOG_PROMPTS: "false",
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
